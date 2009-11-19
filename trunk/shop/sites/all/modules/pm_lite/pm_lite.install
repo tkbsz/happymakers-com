@@ -1,0 +1,84 @@
+<?php
+// $Id: pm_lite.install,v 1.1.2.2 2008/06/03 05:05:49 rszrama Exp $
+
+/**
+ * Implementation of hook_install().
+ */
+function pm_lite_install() {
+  // Create tables.
+  drupal_install_schema('pm_lite');
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function pm_lite_uninstall() {
+  // Delete any existing PMs.
+  $result = db_query("SELECT nid FROM {pm_lite}");
+  while ($data = db_fetch_array($result)) {
+    $node = node_load($data['nid']);
+
+    db_query("DELETE FROM {node} WHERE nid = %d", $node->nid);
+    db_query("DELETE FROM {node_revisions} WHERE nid = %d", $node->nid);
+
+    // Call the node-specific callback (if any):
+    node_invoke($node, 'delete');
+    node_invoke_nodeapi($node, 'delete');
+
+    // Remove this node from the search index if needed.
+    if (function_exists('search_wipe')) {
+      search_wipe($node->nid, 'node');
+    }
+  }
+
+  // Clear the page and block caches.
+  cache_clear_all();
+
+  // Remove PM Lite table.
+  drupal_uninstall_schema('pm_lite');
+}
+
+/**
+ * Implementation of hook_schema().
+ */
+function pm_lite_schema() {
+  $schema['pm_lite'] = array(
+    'fields' => array(
+      'nid' => array(
+        'description' => t('The {node}.nid of the PM node.'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'recipient' => array(
+        'description' => t('The {users}.uid of the recipient of the PM.'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'status' => array(
+        'description' => t("Indicator of a PM's status; 0 = unread, 1 = read."),
+        'type' => 'int',
+        'size' => 'small',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'parent' => array(
+        'description' => t('The {node}.nid of the PM this message was sent in reply to.'),
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ),
+    'indexes' => array(
+      'nid' => array('nid'),
+      'recipient' => array('recipient'),
+    ),
+  );
+
+  return $schema;
+}

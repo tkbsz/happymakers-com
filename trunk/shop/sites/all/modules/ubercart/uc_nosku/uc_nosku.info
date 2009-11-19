@@ -1,0 +1,7 @@
+; $Id$
+name = "No sku"
+description = "Hides the sku input field on the edit product form and allocates its default value with 'default'."
+dependencies[] = uc_product
+package = "Ubercart (Optional)"
+core = 6.x
+php = 5.0

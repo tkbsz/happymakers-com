@@ -1,0 +1,11 @@
+; $Id: pm_lite.info,v 1.1 2008/05/23 07:04:17 rszrama Exp $
+name = PM Lite
+description = A lightweight private messaging module that creates PMs as nodes.
+core = 6.x
+
+; Information added by drupal.org packaging script on 2009-02-20
+version = "6.x-1.0-rc1"
+core = "6.x"
+project = "pm_lite"
+datestamp = "1235109039"
+
