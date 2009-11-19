@@ -1,0 +1,898 @@
+<?php
+// $Id: pm_lite.module,v 1.1.2.18 2009/02/20 05:43:36 rszrama Exp $
+
+/**
+ * @file
+ * A lightweight private messaging module that creates PMs as nodes.
+ *
+ * Functionality goals for this project include:
+ * - Allow users to send private messages to one another or to multiple users.
+ * - Create PMs as nodes so they can be customized using regular node modules.
+ * - Display a basic inbox with message tagging and archiving.
+ * - Provide simple Views integration.
+ *
+ * This is a work in progress.
+ *
+ * Developed by Wombats - http://www.bywombats.com
+ */
+
+/**
+ * Implementation of hook_menu().
+ */
+function pm_lite_menu() {
+  $items['pm_lite/autocomplete'] = array(
+    'title' => 'Recipient autocomplete',
+    'page callback' => 'pm_lite_autocomplete',
+    'access arguments' => array('access pm_lite'),
+    'type' => MENU_CALLBACK,
+  );
+  $items['pm'] = array(
+    'title' => 'My inbox',
+    'title callback' => 'pm_lite_menu_title',
+    'description' => 'View and send private messages to other users.',
+    'page callback' => 'pm_lite_redirect',
+    'access arguments' => array('access pm_lite'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['pm/%user'] = array(
+    'title' => 'Private messages',
+    'description' => 'View and send private messages to other users.',
+    'page callback' => 'pm_lite_table',
+    'page arguments' => array(1),
+    'access callback' => 'pm_lite_inbox_access',
+    'access arguments' => array(1, 'inbox'),
+    'type' => MENU_CALLBACK,
+  );
+  $items['pm/%user/inbox'] = array(
+    'title' => 'Inbox',
+    'description' => 'View a list of private messages you have received.',
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+  $items['pm/%user/sent'] = array(
+    'title' => 'Sent messages',
+    'description' => 'View a list of private message you have sent.',
+    'page callback' => 'pm_lite_table',
+    'page arguments' => array(1, 'sent'),
+    'access callback' => 'pm_lite_inbox_access',
+    'access arguments' => array(1),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 5,
+  );
+  $items['pm/%user/compose'] = array(
+    'title' => 'Compose',
+    'description' => 'Send a private message to another user.',
+    'page callback' => 'pm_lite_compose',
+    'access callback' => 'pm_lite_inbox_access',
+    'access arguments' => array(1),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+  );
+
+  $items['admin/settings/pm-lite'] = array(
+    'title' => 'PM Lite',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('pm_lite_settings_form'),
+    'access arguments' => array('administer pm_lite'),
+  );
+
+  return $items;
+}
+
+/**
+ * Implementation of hook_perm().
+ */
+function pm_lite_perm() {
+  return array('administer pm_lite', 'access pm_lite');
+}
+
+/**
+ * Implementation of hook_theme().
+ */
+function pm_lite_theme() {
+  return array(
+    'pm_lite_header' => array(
+      'arguments' => array('from' => NULL, 'to' => NULL, 'subject' => NULL, 'date' => NULL),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_user().
+ */
+function pm_lite_user($op, &$edit, &$account, $category = NULL) {
+  global $user;
+
+  switch ($op) {
+    case 'login':
+      if (user_access('access pm_lite', $account)) {
+        // Display a message upon login of the number of unread messages.
+        $unread = pm_lite_unread();
+
+        if (variable_get('pm_lite_login_notify', TRUE) && $unread > 0) {
+          drupal_set_message(format_plural($unread, 'You have 1 unread private message in your <a href="!url">inbox</a>.', 'You have @count unread private messages in your <a href="!url">inbox</a>.', array('!url' => url('pm'))));
+        }
+      }
+      break;
+
+    case 'view':
+      // Show a send PM link if applicable.
+      if (user_access('access pm_lite') && $account->pm_lite_allow !== 0) {
+        $account->content['pm_lite'] = array(
+          '#type' => 'user_profile_category',
+          '#weight' => 6,
+          '#title' => t('Private messages'),
+          'send_pm' => array(
+            '#type' => 'user_profile_item',
+            '#value' => l(t('Send a private message to @name.', array('@name' => $user->uid == $account->uid ? t('yourself') : $account->name)), 'node/add/pm/to/'. $account->uid),
+          ),
+        );
+      }
+      break;
+
+    /**
+     * This feature is not fully implemented and is of questionable necessity.
+     * As such, it has been commented out for the 1.0 release.
+     *
+    case 'form':
+      // Add PM Lite settings to the user account edit form if need be.
+      // TODO: Store this settings somewhere other than the user data array.
+      if (user_access('access pm_lite') && $category == 'account') {
+        $form['pm_lite_settings'] = array(
+          '#type' => 'fieldset',
+          '#title' => t('Private message settings'),
+          '#collapsible' => TRUE,
+        );
+        $form['pm_lite_settings']['pm_lite_allow'] = array(
+          '#type' => 'checkbox',
+          '#title' => t('Allow users to send private messages to you.'),
+          '#default_value' => $edit['pm_lite_allow'] === 0 ? 0 : 1,
+        );
+        return $form;
+      }
+      break;
+      */
+  }
+}
+
+/**
+ * Implementation of hook_form_alter().
+ */
+function pm_lite_form_alter(&$form, $form_state, $form_id) {
+  // Alter the PM node add/edit form to be more appropriate.
+  if ($form_id == 'pm_node_form') {
+    // Set the page title and submit button value.
+    if (arg(2) !== 'edit') {
+      drupal_set_title(t('Send private message'));
+      $form['buttons']['submit']['#value'] = t('Send private message');
+    }
+
+    // Adjust the weight of the submit button.
+    $form['buttons']['submit']['#weight'] = 12;
+
+    // Unset superfluous fields if the exist.
+    unset($form['revision_information'], $form['comment_settings'],  $form['menu'], $form['path']);
+  }
+
+  // Alter the advanced search form to remove the PM search box.
+  if ($form_id == 'search_form') {
+    unset($form['advanced']['type']['#options']['pm']);
+  }
+
+  // Alter the filter form at /admin/content/node to remove the PM option.
+  if ($form_id == 'node_admin_content') {
+    unset($form['filters']['status']['type']['#options']['pm']);
+  }
+}
+
+// Displays the admin settings form.
+function pm_lite_settings_form() {
+  $form['pm_lite_login_notify'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Display a message to users upon login with the number of unread private messages in their inbox.'),
+    '#default_value' => variable_get('pm_lite_login_notify', TRUE),
+  );
+
+  $form['pm_lite_show_header'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Display a message header on private message pages.'),
+    '#default_value' => variable_get('pm_lite_show_header', TRUE),
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Implementation of hook_db_rewrite_sql().
+ *
+ * Filter private message nodes out of node listing queries.
+ */
+function pm_lite_db_rewrite_sql($query, $primary_table, $primary_field, $args) {
+  // Define an array of table aliases that are inappropriate for the rewrite.
+  $tables = array('nc');
+
+  // Add a node type restriction to the appropriate queries.
+  if ($primary_field == 'nid' && !in_array($primary_table, $tables)) {
+    return array('where' => $primary_table .".type != 'pm'");
+  }
+}
+
+/**
+ * Implementation of hook_enable().
+ */
+function pm_lite_enable() {
+  // Get the weight of the Database logging module.
+  $weight = db_result(db_query("SELECT weight FROM {system} WHERE name = '%s'", 'dblog'));
+
+  // Update the weight of the PM Lite module so its hooks get called after the
+  // Database logging module.
+  db_query("UPDATE {system} SET weight = %d WHERE name = '%s'", max(1000, $weight + 1), 'pm_lite');
+}
+
+/**
+ * Implementation of hook_watchdog().
+ */
+function pm_lite_watchdog($log = array()) {
+  // If the watchdog is for a PM node...
+  if ($log['type'] == 'content' && $log['variables']['@type'] == 'pm') {
+    // Delete it when it occurs, matching on several variables to make sure we
+    // don't kill the wrong log entry.
+    db_query("DELETE FROM {watchdog} WHERE uid = %d AND type = '%s' AND variables = '%s' AND timestamp = %d",
+      $log['user']->uid, 'content', serialize($log['variables']), $log['timestamp']);
+  }
+}
+
+/**
+ * Implementation of hook_node_info().
+ */
+function pm_lite_node_info() {
+  return array(
+    'pm' => array(
+      'name' => t('Private message'),
+      'module' => 'pm_lite',
+      'description' => t('Send a private message to another user or group of users on this site.'),
+      'title_label' => t('Subject'),
+      'body_label' => t('Message'),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_access().
+ */
+function pm_lite_access($op, $node, $account) {
+  switch ($op) {
+    case 'view':
+      // Return FALSE if the user doesn't have access to pm_lite.
+      if (!user_access('access pm_lite', $account)) {
+        return FALSE;
+      }
+
+      // Return TRUE if the user sent the PM.
+      if ($node->uid == $account->uid) {
+        return TRUE;
+      }
+
+      // Return TRUE if the user is one of the recipients.
+      if (pm_lite_recipient($account->uid, $node)) {
+        return TRUE;
+      }
+
+      return FALSE;
+
+    case 'create':
+      return user_access('access pm_lite', $account);
+
+    case 'update':
+    case 'delete':
+      return user_access('administer pm_lite', $account);
+  }
+}
+
+/**
+ * Implementation of hook_form().
+ */
+function pm_lite_form(&$node) {
+  global $user;
+
+  // Prepare and set an appropriate breadcrumb.
+  $breadcrumb = array(
+    l(t('Home'), '<front>'),
+    l(t('Private messages'), 'pm'),
+  );
+
+  if (arg(2) == 'edit') {
+    $breadcrumb[] = l(check_plain($node->title), 'node/'. $node->nid);
+  }
+
+  drupal_set_breadcrumb($breadcrumb);
+
+  // Get the information for the gradebook node type.
+  $type = node_get_types('type', $node);
+
+  // Catch special events when authoring new PMs.
+  if (arg(1) == 'add' && !isset($node->preview)) {
+    if (arg(3) == 'reply' || arg(3) == 'reply-all') {
+      // Load the parent PM specified in the URL.
+      $parent = node_load(arg(4));
+
+      // Make sure this was a valid PM and the user has access to it.
+      if ($parent->nid && pm_lite_access('view', $parent, $user)) {
+        // If so, first set the default recipients for the reply if necessary.
+        $recipients = array($parent->uid);
+
+        // Add extra default recipients if reply to all was chosen.
+        if (arg(3) == 'reply-all') {
+          foreach ($parent->pm_lite['recipients'] as $key => $value) {
+            if ($key != $user->uid) {
+              $recipients[] = $key;
+            }
+          }
+        }
+
+        // Loop through the recipient UIDs and add them to the node object.
+        foreach ($recipients as $recipient) {
+          // Get the name of each recipient if it exists.
+          $name = db_result(db_query("SELECT name FROM {users} WHERE uid = %d", $recipient));
+
+          // Add the data to the recipients array.
+          if ($name) {
+            $node->pm_lite['recipients'][$recipient] = array('name' => $name);
+          }
+        }
+
+        // Then set a default title.
+        $node->title = t('Re: @title', array('@title' => $parent->title));
+
+        // Finally, set the parent node ID for the reply.
+        $form['parent'] = array(
+          '#type' => 'value',
+          '#value' => $parent->nid,
+        );
+
+        // Add a field that displays the message of the previous PM.
+        $form['original'] = array(
+          '#type' => 'fieldset',
+          '#title' => t('Original message'),
+          '#description' => t('You are sending a reply to this message.'),
+          '#collapsible' => TRUE,
+          '#weight' => -4,
+        );
+        $form['original']['original_text'] = array(
+          '#value' => check_markup($parent->body, $parent->format),
+        );
+      }
+      else {
+        // Otherwise just go to the main node add URL.
+        drupal_goto('node/add/pm');
+      }
+    }
+    elseif (arg(3) == 'to') {
+      // Add recipients based on the third argument when sending a new PM.
+      foreach (explode('-', arg(4)) as $recipient) {
+        // Get the name of each recipient if it exists.
+        $name = db_result(db_query("SELECT name FROM {users} WHERE uid = %d", $recipient));
+
+        // Add the data to the recipients array.
+        if ($name) {
+          $node->pm_lite['recipients'][$recipient] = array('name' => $name);
+        }
+      }
+    }
+  }
+
+  // If recipients exist for this message, make sure the default gets set.
+  if (is_array($node->pm_lite['recipients'])) {
+    $recipients = array();
+
+    // Loop through the PM recipients and add the name to an array..
+    foreach ($node->pm_lite['recipients'] as $key => $value) {
+      $recipients[] = $value['name'];
+    }
+
+    // Set the default to be a comma separated string of names.
+    $default = implode(', ', $recipients);
+  }
+  else {
+    $default = $node->recipients;
+  }
+
+  // Add a recipient field.
+  $form['recipients'] = array(
+    '#type' => 'textfield',
+    '#title' => t('To'),
+    '#description' => t('Type the username of the recipient. Separate names with commas to send to multiple recipients.'),
+    '#autocomplete_path' => 'pm_lite/autocomplete',
+    '#default_value' => $default,
+    '#required' => TRUE,
+    '#weight' => -10,
+  );
+
+  // Always add the title field.
+  $form['title'] = array(
+    '#type' => 'textfield',
+    '#title' => check_plain($type->title_label),
+    '#default_value' => $node->title,
+    '#required' => TRUE,
+    '#weight' => -5,
+  );
+
+  // Always add the body field.
+  $form['body'] = array(
+    '#type' => 'textarea',
+    '#title' => check_plain($type->body_label),
+    '#default_value' => $node->body,
+    '#rows' => 10,
+    '#required' => TRUE,
+    '#weight' => -3,
+  );
+  $form['format'] = filter_form($node->format);
+  $form['format']['#weight'] = -2;
+
+  return $form;
+}
+
+/**
+ * Implementation of hook_validate().
+ *
+ * Makes sure the recipients entered are all valid.
+ */
+function pm_lite_validate($node, &$form) {
+  // Put the recipients into an array.
+  $recipients = explode(',', $form['recipients']['#value']);
+
+  // Loop through them to make sure they're all valid usernames.
+  foreach ($recipients as $recipient) {
+    $account = user_load(array('name' => trim($recipient)));
+
+    // Fail if the user account no longer exists, due to a typo or name change.
+    if (!$account->uid) {
+      form_set_error('recipients', t('The recipient %name does not exist.', array('%name' => $recipient)));
+    }
+    elseif (!$account->status) {
+      form_set_error('recipients', t('%name cannot receive private messages.', array('%name' => $recipient)));
+    }
+
+    // TODO: Account for users who have private messaging turned off.
+  }
+}
+
+/**
+ * Implementation of hook_insert().
+ *
+ * Creates a new row in the pm_lite table for every recipient.
+ */
+function pm_lite_insert($node) {
+  // Put the recipients into an array.
+  $recipients = explode(',', $node->recipients);
+  $used_uids = array();
+
+  foreach ($recipients as $recipient) {
+    // Fetch the uid of the recipient.
+    $uid = db_result(db_query("SELECT uid FROM {users} WHERE name = '%s'", trim($recipient)));
+
+    // If it's still valid, add an entry for it.
+    if ($uid && !in_array($uid, $used_uids)) {
+      db_query("INSERT INTO {pm_lite} (nid, recipient, status, parent) VALUES (%d, '%s', 0, %d)", $node->nid, $uid, $node->parent);
+      $used_uids[] = $uid;
+    }
+  }
+}
+
+/**
+ * Implementation of hook_update().
+ *
+ * Remove any recipients that no longer apply and add any new ones.
+ */
+function pm_lite_update($node) {
+  // Build an array of the recipient UIDs prior to the update.
+  $old_uids = array();
+
+  $result = db_query("SELECT * FROM {pm_lite} WHERE nid = %d", $node->nid);
+  while ($row = db_fetch_array($result)) {
+    $old_uids[] = $row['recipient'];
+  }
+
+  // Split the updated recipients into an array.
+  $recipients = explode(',', $node->recipients);
+  $new_uids = array();
+
+  foreach ($recipients as $recipient) {
+    // Fetch the uid of the recipient.
+    $uid = db_result(db_query("SELECT uid FROM {users} WHERE name = '%s'", trim($recipient)));
+
+    // If it's a valid UID and not a prior recipient, add an entry for it.
+    if ($uid) {
+      if (!in_array($uid, $old_uids)) {
+        db_query("INSERT INTO {pm_lite} (nid, recipient) VALUES (%d, '%s')", $node->nid, $uid);
+      }
+      $new_uids[] = $uid;
+    }
+  }
+
+  // Delete any recipients that got ditched.
+  db_query("DELETE FROM {pm_lite} WHERE nid = %d AND recipient NOT IN(". implode(",", $new_uids) .")", $node->nid);
+}
+
+/**
+ * Implementation of hook_load().
+ *
+ * Adds the recipients array to the node object.
+ */
+function pm_lite_load($node) {
+  $data->pm_lite['recipients'] = array();
+
+  // Loop through every entry in the PM Lite table and handle the data.
+  $result = db_query("SELECT p.*, u.name FROM {pm_lite} AS p LEFT JOIN {users} AS u ON p.recipient = u.uid WHERE nid = %d", $node->nid);
+  while ($row = db_fetch_array($result)) {
+    // Add the recipient data to the recipients array.
+    $data->pm_lite['recipients'][$row['recipient']] = array('name' => $row['name']);
+  }
+
+  return $data;
+}
+
+/**
+ * Implementation of hook_view().
+ */
+function pm_lite_view($node, $teaser = FALSE, $page = FALSE) {
+  global $user;
+
+  $node = node_prepare($node, $teaser);
+
+  // Check to make sure people with administer nodes access aren't getting to
+  // PM nodes that aren't theirs.
+  if (user_access('administer nodes')) {
+    // Check to see if the user then either has administer pm_lite permission or
+    // would otherwise be able to view this node.
+    if (!pm_lite_access('view', $node, $user) && !user_access('administer pm_lite')) {
+      // If neither, then get outta here.
+      drupal_access_denied();
+    }
+  }
+
+  if ($page) {
+    drupal_add_css(drupal_get_path('module', 'pm_lite') .'/pm_lite.css', 'module');
+
+    // Set the breadcrumb to include private messages.
+    $breadcrumb = array(
+      l(t('Home'), '<front>'),
+      l(t('Private messages'), 'pm'),
+    );
+    drupal_set_breadcrumb($breadcrumb);
+
+    // If enabled, add the message header table.
+    if (variable_get('pm_lite_show_header', TRUE)) {
+      $node->content['pm_header'] = array(
+        '#value' => pm_lite_header($node),
+        '#weight' => -10,
+      );
+    }
+
+    // Add a form to handle replies and other PM actions.
+    $node->content['pm_view_form'] = array(
+      '#value' => drupal_get_form('pm_lite_view_form', $node),
+      '#weight' => 5,
+    );
+
+    // Mark the message as read if the user is a recipient.
+    db_query("UPDATE {pm_lite} SET status = 1 WHERE nid = %d AND recipient = %d", $node->nid, $user->uid);
+  }
+
+  return $node;
+}
+
+// Displays the form at the bottom of a PM.
+function pm_lite_view_form($form_state, $node) {
+  global $user;
+
+  // If the user was a recipient of the PM.
+  if (pm_lite_recipient($user->uid, $node)) {
+    $form['pm_nid'] = array(
+      '#type' => 'value',
+      '#value' => $node->nid,
+    );
+
+    $form['pm_lite_reply'] = array(
+      '#type' => 'submit',
+      '#value' => t('Reply'),
+      '#submit' => array('pm_lite_view_form_submit_reply'),
+      '#prefix' => '<span class="pm-view-form-label">'. t('With this message:') .'</span>',
+    );
+
+    if (count($node->pm_lite['recipients']) > 1) {
+      $form['pm_lite_reply_all'] = array(
+        '#type' => 'submit',
+        '#value' => t('Reply to all'),
+        '#submit' => array('pm_lite_view_form_submit_reply_all'),
+      );
+    }
+  }
+  elseif ($user->uid == $node->uid) {
+    // Or if the user sent the PM.
+    $form['pm_lite_inbox'] = array(
+      '#type' => 'submit',
+      '#value' => t('Inbox'),
+      '#submit' => array('pm_lite_view_form_submit_inbox'),
+      '#prefix' => '<span class="pm-view-form-label">'. t('Return to:') .'</span>',
+    );
+
+    $form['pm_lite_sent_messages'] = array(
+      '#type' => 'submit',
+      '#value' => t('Sent messages'),
+      '#submit' => array('pm_lite_view_form_submit_sent'),
+    );
+  }
+
+  return $form;
+}
+
+function pm_lite_view_form_submit_reply($form, $form_state) {
+  drupal_goto('node/add/pm/reply/'. $form_state['values']['pm_nid']);
+}
+
+function pm_lite_view_form_submit_reply_all($form, $form_state) {
+  drupal_goto('node/add/pm/reply-all/'. $form_state['values']['pm_nid']);
+}
+
+function pm_lite_view_form_submit_inbox($form, $form_state) {
+  drupal_goto('pm');
+}
+
+function pm_lite_view_form_submit_sent($form, $form_state) {
+  global $user;
+
+  drupal_goto('pm/'. $user->uid .'/sent');
+}
+
+/**
+ * Implementation of hook_delete().
+ */
+function pm_lite_delete(&$node) {
+  db_query("DELETE FROM {pm_lite} WHERE nid = %d", $node->nid);
+}
+
+// Sets the title for the default inbox menu item.
+function pm_lite_menu_title() {
+  // Grab the number of unread PMs.
+  $unread = pm_lite_unread();
+
+  // If the user has unread PMs...
+  if ($unread > 0) {
+    // Set the title to include the number of unread PMs for the user.
+    return t('My inbox (@unread)', array('@unread' => $unread));
+  }
+
+  // Otherwise just set the title to point to the inbox.
+  return t('My inbox');
+}
+
+// Returns a JSON object containing autocomplete suggestions for recipients.
+function pm_lite_autocomplete($string = '') {
+  $matches = array();
+
+  // Clean up the names already entered.
+  $names = explode(',', $string);
+  for ($i = 0; $i < count($names); $i++) {
+    $names[$i] = trim($names[$i]);
+  }
+
+  // Grab the last bit entered to search against.
+  $search = array_pop($names);
+
+  if ($search != '') {
+    // Build the prefix we send back with each option.
+    $prefix = count($names) ? implode(', ', $names) .', ' : '';
+
+    // TODO: Revise query so it doesn't include already entered names or users with PMs turned off.
+    $result = db_query_range("SELECT name FROM {users} WHERE status <> 0 AND LOWER(name) LIKE LOWER('%s%%')", $search, 0, 10);
+    while ($user = db_fetch_object($result)) {
+      $matches[$prefix . $user->name] = check_plain($user->name);
+    }
+  }
+
+  drupal_json($matches);
+}
+
+// Returns the number of unread PMs for an account; defaults to the current user.
+function pm_lite_unread($account = NULL) {
+  // Check to see if an alternate account was supplied.
+  if ($account) {
+    $uid = $account->uid;
+  }
+  else {
+    global $user;
+    $uid = $user->uid;
+  }
+
+  // Return the number of unread PMs.
+  return db_result(db_query("SELECT COUNT(*) FROM {pm_lite} WHERE recipient = %d AND status = 0", $uid));
+}
+
+// Restricts access to user inboxes.
+function pm_lite_inbox_access($account) {
+  global $user;
+
+  if (user_access('access pm_lite') && $user->uid == $account->uid) {
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+// Redirects a user to their own inbox.
+function pm_lite_redirect() {
+  global $user;
+
+  if (pm_lite_inbox_access($user)) {
+    drupal_goto('pm/'. $user->uid);
+  }
+
+  drupal_access_denied();
+}
+
+/**
+ * Displays an list of a user's private messages.
+ *
+ * @param $account
+ *   The user object of the user whose messages should be displayed.
+ * @param $view
+ *   Determines what type of messages to display; 'view' or 'sent'.
+ * @param $limit
+ *   The number of private messages to include in the table.
+ * @return
+ *   The HTML output of the table.
+ */
+function pm_lite_table($account, $view = 'inbox', $limit = 25) {
+  $rows = array();
+
+  // Setup the PM table header.
+  $header = array(
+    array('data' => t('From'), 'field' => 'u.uid'),
+    array('data' => t('Subject'), 'width' => '50%', 'field' => 'n.title'),
+    array('data' => t('Date'), 'field' => 'n.created', 'sort' => 'desc'),
+  );
+
+  // Query the database for the account's PMs based on the specified view.
+  switch ($view) {
+    case 'inbox':
+      $result = pager_query("SELECT pm.nid, pm.status, u.uid, u.name, n.title, n.created FROM {pm_lite} pm LEFT JOIN {node} n ON pm.nid = n.nid LEFT JOIN {users} u ON n.uid = u.uid WHERE pm.recipient = %d". tablesort_sql($header), $limit, 0, NULL, $account->uid);
+      break;
+
+    case 'sent':
+      $header[0]['data'] = t('To');
+      $result = pager_query("SELECT DISTINCT pm.nid, n.title, n.created FROM {pm_lite} pm LEFT JOIN {node} n ON pm.nid = n.nid WHERE n.uid = %d". tablesort_sql($header), $limit, 0, NULL, $account->uid);
+      break;
+  }
+
+  // Loop through the messages and add them to the table.
+  while ($pm = db_fetch_array($result)) {
+    // Setup the message status and user links for the table.
+    $status = '';
+    $links = array();
+
+    switch ($view) {
+      case 'inbox':
+        if ($pm['status'] == 0) {
+          $status = ' <span class="marker">'. t('new') .'</span>';
+        }
+        $links[] = l($pm['name'], 'user/'. $pm['uid']);
+        break;
+
+      case 'sent':
+        // Loop through every entry in the PM Lite table and handle the data.
+        $rec_result = db_query("SELECT pm.recipient, pm.status, u.name FROM {pm_lite} pm LEFT JOIN {users} u ON pm.recipient = u.uid WHERE pm.nid = %d", $pm['nid']);
+        while ($row = db_fetch_array($rec_result)) {
+          $rec_status = '';
+          if ($row['status'] == 0) {
+            $rec_status = ' <span class="marker">'. t('new') .'</span>';
+          }
+          $links[] = l($row['name'], 'user/'. $row['recipient']) . $rec_status;
+        }
+        break;
+    }
+
+    // Add each PM to the table.
+    $rows[] = array(
+      implode(', ', $links),
+      l($pm['title'], 'node/'. $pm['nid']) . $status,
+      format_date($pm['created'], 'small'),
+    );
+  }
+
+  // Add a message if no messages are found.
+  if (count($rows) == 0) {
+    $rows[] = array(
+      array(
+        'data' => t('No messages found.'),
+        'colspan' => 3,
+      ),
+    );
+  }
+
+  $output = theme('table', $header, $rows) . theme('pager');
+
+  return $output;
+}
+
+// Redirect to the PM node add form.
+function pm_lite_compose() {
+  drupal_goto('node/add/pm');
+}
+
+/**
+ * Checks to see if a user is a recipient of a given PM.
+ *
+ * @param $uid
+ *   The uid of the user to check.
+ * @param $node
+ *   The full node object of the PM to check.
+ * @return
+ *   TRUE or FALSE indicating whether or not the user is a recipient of the PM.
+ */
+function pm_lite_recipient($uid, $node) {
+  return in_array($uid, array_keys($node->pm_lite['recipients']));
+}
+
+/**
+ * Build the message header table.
+ *
+ * @param $node
+ *   The full node object of the PM.
+ * @return
+ *   The HTML output for the message header.
+ */
+function pm_lite_header($node) {
+  // Build the from variable.
+  $author = db_result(db_query("SELECT name FROM {users} WHERE uid = %d", $node->uid));
+  $from = l(check_plain($author), 'user/'. $node->uid);
+
+  // Build the to variable.
+  $recipients = array();
+
+  foreach ($node->pm_lite['recipients'] as $key => $value) {
+    $recipients[] = l(check_plain($value['name']), 'user/'. $key);
+  }
+  $to = implode(', ', $recipients);
+
+  // Return the themed output.
+  return theme('pm_lite_header', $from, $to, check_plain($node->title), format_date($node->created));
+}
+
+/**
+ * Theme a message header table.
+ *
+ * @param $from
+ *   A link to the author.
+ * @param $to
+ *   Links to all the recipients.
+ * @param $subject
+ *   The subject of the PM.
+ * @param $date
+ *   A medium formatted date string for when the PM was created.
+ * @return
+ *   The HTML output for a message header table.
+ * @ingroup themeable
+ */
+function theme_pm_lite_header($from, $to, $subject, $date) {
+  // Build the rows array for the table.
+  $rows = array(
+    array(
+      array('data' => t('From:'), 'class' => 'header-label'),
+      array('data' => $from, 'class' => 'header-value'),
+    ),
+    array(
+      array('data' => t('To:'), 'class' => 'header-label'),
+      array('data' => $to, 'class' => 'header-value'),
+    ),
+    array(
+      array('data' => t('Subject:'), 'class' => 'header-label'),
+      array('data' => $subject, 'class' => 'header-value'),
+    ),
+    array(
+      array('data' => t('Date:'), 'class' => 'header-label'),
+      array('data' => $date, 'class' => 'header-value'),
+    ),
+  );
+
+  return theme('table', array(), $rows, array('class' => 'pm-lite-header'));
+}

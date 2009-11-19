@@ -1,0 +1,25 @@
+/* $Id: pm_lite.css,v 1.1.2.4 2009/02/20 05:43:36 rszrama Exp $ */
+
+body form#pm-lite-view-form {
+  margin-bottom: 0px;
+  padding-top: 1em;
+}
+
+#pm-lite-view-form .form-submit {
+  margin: 0px;
+}
+
+.pm-view-form-label {
+  font-weight: bold;
+  padding-right: 1em;
+}
+
+.pm-lite-header .header-label {
+  font-weight: bold;
+  text-align: right;
+  padding-right: 1em;
+}
+
+.pm-lite-header .header-value {
+  width: 95%;
+}
