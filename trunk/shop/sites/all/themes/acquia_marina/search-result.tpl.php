@@ -47,6 +47,20 @@
  */
 ?>
 <div class="search-result <?php print $search_zebra; ?>">
+<?php
+   if ( $info_split['type'] == 'Product') 
+{ 
+    //print_r($result);
+    //print $result['node']->nid;
+    $node = node_load($result['node']->nid);
+    print node_view($node, $teaser = TRUE, $page = FALSE, $links = TRUE);
+    print "</div>";
+    return;
+    
+  }
+?>
+
+
   <dt class="title">
     <a href="<?php print $url; ?>"><?php print $title; ?></a>
   </dt>
