@@ -263,7 +263,7 @@ public class EmployeesView extends CustomComponent {
 		} else {
 			form.setItemDataSource(new BeanItem(currentEmployee));
 			form.setVisibleItemProperties(
-					new String[]{"firstName", "lastName", "personNumber", "dateOfBirth", "position"});
+					new String[]{"firstName", "lastName", "personNumber", "dateOfBirth", "position", "test"});
 			form.setVisible(true);
 			deleteEmployeeButton.setVisible(!addingNew); // Persistent
 			salaryInfoButton.setVisible(!addingNew);
